@@ -4,6 +4,8 @@ import { cpSync, writeFileSync, readFileSync, existsSync } from 'fs';
 
 global.LATEST_ONLY = true;
 
+const repo = process.env.GITHUB_REPOSITORY || 'OpenAsar/discord-desktop-datamining';
+
 const modules = [
   'arborium',
   'host',
@@ -78,10 +80,10 @@ ${Object.keys(versions).filter(x => x !== 'host').sort().map(x => `| ${x} | ${ve
 
 ## branches
 
-- [stable](https://github.com/OpenAsar/discord-desktop-datamining/tree/stable)
-- [ptb](https://github.com/OpenAsar/discord-desktop-datamining/tree/ptb)
-- [canary](https://github.com/OpenAsar/discord-desktop-datamining/tree/canary)
-- [development](https://github.com/OpenAsar/discord-desktop-datamining/tree/development)`)
+- [stable](https://github.com/${repo}/tree/stable)
+- [ptb](https://github.com/${repo}/tree/ptb)
+- [canary](https://github.com/${repo}/tree/canary)
+- [development](https://github.com/${repo}/tree/development)`)
 
 const hostVersion = manifest.full.host_version.join('.');
 if (!LATEST_ONLY) cpSync(join(baseOutDir, hostVersion), join(baseOutDir, 'latest'), { recursive: true });

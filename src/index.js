@@ -4,7 +4,7 @@ import { cpSync, writeFileSync, readFileSync, existsSync } from 'fs';
 
 global.LATEST_ONLY = true;
 
-const repo = process.env.GITHUB_REPOSITORY || 'OpenAsar/discord-desktop-datamining';
+const repo = process.env.GITHUB_REPOSITORY || 'Wumpus-Central/discord-desktop-datamining';
 
 const modules = [
   'arborium',

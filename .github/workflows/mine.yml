@@ -2,20 +2,96 @@ name: Mine
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel to mine
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - stable
+          - ptb
+          - canary
+          - development
+      version:
+        description: Expected host version (optional, informational)
+        type: string
+        required: false
+        default: ''
+      force:
+        description: Mine even if the branch already matches Discord
+        type: boolean
+        required: false
+        default: false
+  repository_dispatch:
+    types: [mine]
   schedule:
+    # Fallback only. Keep hourly until tracker dispatch is wired up; after that
+    # this can be relaxed to '0 */6 * * *'.
     - cron: '0 * * * *'
-  push:
-    branches: [ main ]
+
+permissions:
+  contents: write
 
 jobs:
-  mine:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      channels: ${{ steps.matrix.outputs.channels }}
+      version: ${{ steps.matrix.outputs.version }}
+      force: ${{ steps.matrix.outputs.force }}
+    steps:
+      - name: Resolve channels
+        id: matrix
+        env:
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          payload_channel=$(jq -r '.channel // empty' <<< "$PAYLOAD")
+          payload_version=$(jq -r '.version // empty' <<< "$PAYLOAD")
+
+          channel="${payload_channel:-$INPUT_CHANNEL}"
+          channel="$(printf '%s' "$channel" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          version="${payload_version:-$INPUT_VERSION}"
+          force="${INPUT_FORCE:-false}"
+
+          case "$channel" in
+            ''|all)
+              channels='["stable","ptb","canary","development"]'
+              ;;
+            stable|ptb|canary|development)
+              channels="[\"$channel\"]"
+              ;;
+            *)
+              echo "unknown channel: $channel" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "channels=$channels" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "force=$force" >> "$GITHUB_OUTPUT"
+          echo "mining $channels (version=${version:-unknown}, force=$force)"
+
+  mine:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
+      fail-fast: false
       matrix:
-        channel: ['stable', 'ptb', 'canary', 'development']
+        channel: ${{ fromJSON(needs.prepare.outputs.channels) }}
+    concurrency:
+      group: mine-${{ matrix.channel }}
+      cancel-in-progress: false
 
     env:
       CHECKOUT_DIR: ${{ github.workspace }}/checkout
+      CHANNEL: ${{ matrix.channel }}
+      FORCE: ${{ needs.prepare.outputs.force }}
 
     steps:
       - name: Checkout script
@@ -28,25 +104,63 @@ jobs:
           path: ${{ env.CHECKOUT_DIR }}
         continue-on-error: true
 
+      - name: Check whether this build is already published
+        id: current
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ ! -f "$CHECKOUT_DIR/manifest.json" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          url="https://discord.com/api/updates/distributions/app/manifests/latest?platform=win&channel=$CHANNEL&arch=x64&_=$(date +%s%N)"
+          if ! curl -fsS "$url" -o /tmp/latest.json; then
+            echo "Discord manifest unavailable; mining anyway"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          key='{host: .full.host_version, modules: (.modules | with_entries(.value = .value.full.module_version))}'
+          jq -S "$key" /tmp/latest.json > /tmp/latest.key
+          jq -S "$key" "$CHECKOUT_DIR/manifest.json" > /tmp/repo.key
+
+          if cmp -s /tmp/latest.key /tmp/repo.key; then
+            host=$(jq -r '.host | join(".")' /tmp/repo.key)
+            echo "$CHANNEL already at $host; nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Node
+        if: steps.current.outputs.skip != 'true'
         uses: actions/setup-node@v2
         with:
           node-version: '18'
 
       - name: Run
+        if: steps.current.outputs.skip != 'true'
         run: |
           npm install
-          node src ${{ matrix.channel }} "${{ env.CHECKOUT_DIR }}/manifest.json"
+          node src "$CHANNEL" "$CHECKOUT_DIR/manifest.json"
 
       - name: Publish
+        if: steps.current.outputs.skip != 'true'
         run: |
-          rm -rf ${{ env.CHECKOUT_DIR }}/*
-          cp -rf out/. ${{ env.CHECKOUT_DIR }}
+          rm -rf "$CHECKOUT_DIR"/*
+          cp -rf out/. "$CHECKOUT_DIR/"
 
-          echo "" > /tmp/changes.txt
-          cp -rf changes.txt /tmp/changes.txt || :
+          if [ -f changes.txt ]; then
+            cp -f changes.txt /tmp/changes.txt
+          else
+            : > /tmp/changes.txt
+          fi
 
-          cd ${{ env.CHECKOUT_DIR }}
+          cd "$CHECKOUT_DIR"
 
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -55,5 +169,18 @@ jobs:
           echo "*.exe" > .gitignore
 
           git add .
-          git diff-index --quiet HEAD || git commit -m "${{ matrix.channel }} update" -m "$(cat /tmp/changes.txt)"
-          git push origin ${{ matrix.channel }}
+          if git diff-index --quiet HEAD --; then
+            echo "no file changes; skipping commit"
+            exit 0
+          fi
+
+          host=$(jq -r '.full.host_version | join(".")' manifest.json)
+          body=$(cat /tmp/changes.txt)
+
+          if [ -n "$body" ]; then
+            git commit -m "$CHANNEL $host" -m "$body"
+          else
+            git commit -m "$CHANNEL $host"
+          fi
+
+          git push origin "$CHANNEL"

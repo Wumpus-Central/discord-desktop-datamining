@@ -27,9 +27,8 @@ on:
   repository_dispatch:
     types: [mine]
   schedule:
-    # Fallback only. Keep hourly until tracker dispatch is wired up; after that
-    # this can be relaxed to '0 */6 * * *'.
-    - cron: '0 * * * *'
+    # Fallback only; normal updates are dispatched by the tracker.
+    - cron: '0 */6 * * *'
 
 permissions:
   contents: write

@@ -24,7 +24,7 @@
 | rpc | 1 |
 | spellcheck | 1 |
 | sysimg | 1 |
-| utils | 3 |
+| utils | 4 |
 | voice | 2 |
 | zstd | 1 |
 
